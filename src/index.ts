@@ -6,7 +6,7 @@ import fs from "fs";
 import path from "path";
 import { google } from "@ai-sdk/google";
 import { SYSTEM_PROMPT } from "./prompt.ts";
-import { createFile, updateFile, readFile } from "../tools/index.ts";
+import { updateFile, readFile } from "../tools/index.ts";
 import cors from "cors";
 dotenv.config();
 
@@ -47,7 +47,6 @@ app.post("/chat", async (req, res) => {
     toolChoice: "required",
     tools: {
       updateFile: updateFile(sbx),
-      readFile: readFile(sbx),
     },
     maxRetries: 0,
     messages: [

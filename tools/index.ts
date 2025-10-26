@@ -1,19 +1,5 @@
 import { z } from "zod";
 
-export const createFile = (sbx: any) => {
-  return {
-    description: "Create a file at a certain directory with filename and extension",
-    inputSchema: z.object({
-      location: z.string().describe("Relative path to the file"),
-    }),
-    execute: async ({ location }: { location: string }) => {
-      await sbx.files.write(location, "");
-
-      return `File created`;
-    },
-  };
-};
-
 export const updateFile = (sbx: any) => {
   return {
     description: "Update a file at a certain directory",
