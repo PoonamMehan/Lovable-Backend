@@ -1,3 +1,4 @@
+import { Server } from "socket.io";
 import { Sandbox } from "@e2b/code-interpreter";
 import express from "express";
 import dotenv from "dotenv";
@@ -9,70 +10,75 @@ import { SYSTEM_PROMPT } from "./prompt.ts";
 import { updateFile, readFile } from "../tools/index.ts";
 import cors from "cors";
 import { CreateTreeFile } from "../helper/create-tree-file.ts";
+import { createServer } from "http";
+
 dotenv.config();
 
 const app = express();
-
 app.use(cors());
+const httpServer = createServer(app);
+
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+  },
+});
+
 app.use(express.json());
 
-type Item = {
-  name: string;
-  children?: string[];
-};
+io.on("connection", (socket) => {
+  socket.on("startChat", async ({ prompt, messages, sandboxId, userId }) => {
+    console.log("starting chat....");
+    try {
+      socket.join(userId);
 
-app.post("/chat", async (req, res) => {
-  let { prompt, messages, sandboxId } = req.body;
+      const sbx = sandboxId
+        ? await Sandbox.connect(sandboxId)
+        : await Sandbox.create("nav0r7gal5lnjfqhoe27", { timeoutMs: 9_00_000 });
 
-  if (!prompt) {
-    return res.json({
-      error: "No Prompt found ",
-    });
-  }
+      const info = await sbx.getInfo();
 
-  let sbx: any;
+      io.to(userId).emit("sandbox:connected", { sandboxId: sbx.sandboxId });
 
-  if (sandboxId) {
-    sbx = await Sandbox.connect(sandboxId);
-  } else {
-    sbx = await Sandbox.create("nav0r7gal5lnjfqhoe27", {
-      timeoutMs: 9_00_000,
-    });
-  }
+      const emit = (event: string, data: any) => io.to(userId).emit(event, data);
 
-  const info = await sbx.getInfo();
+      const response = await generateText({
+        model: google("gemini-2.5-pro"),
+        system: SYSTEM_PROMPT,
+        toolChoice: "required",
+        tools: {
+          updateFile: updateFile(sbx, emit),
+        },
 
-  const response = await generateText({
-    model: google("gemini-2.5-pro"),
-    system: SYSTEM_PROMPT,
-    toolChoice: "required",
-    tools: {
-      updateFile: updateFile(sbx),
-    },
-    maxRetries: 0,
-    messages,
+        messages,
+        maxRetries: 0,
+        // onStepFinish: (step) => {
+        //   console.log("step take : ", step);
+        // },
+      });
+
+      const host = sbx.getHost(5173);
+
+      const url = `https://${host}`;
+
+      console.log("url : ", url);
+
+      console.log("ai response : ", response);
+
+      emit("ai:done", {
+        url,
+        response: response.content,
+        sandboxId: info.sandboxId,
+        messages: [...messages, { role: "assistant", content: JSON.stringify(response.content, null, 2) }],
+      });
+    } catch (err) {
+      console.error("Error:", err);
+      io.to(userId).emit("error", { message: err.message });
+    }
   });
 
-  const host = sbx.getHost(5173);
-
-  const url = `https://${host}`;
-  console.log("url : ", url);
-
-  const resp = response.content;
-
-  res.json({
-    messages: [
-      ...messages,
-      {
-        role: "assistant",
-        content: JSON.stringify(resp, null, 2),
-      },
-    ],
-    sandboxId: sbx.sandboxId,
-    prompt,
-    sandboxInfo: info,
-    url,
-    resp,
+  socket.on("disconnect", () => {
+    console.log("Client disconnected:", socket.id);
   });
 });
 
@@ -97,4 +103,7 @@ app.post("/files", async (req, res) => {
   // console.log("result : ", result);
   return res.json({ message: "success", files: result.files, tree: result.tree });
 });
-app.listen(3000);
+
+httpServer.listen(3000, () => {
+  console.log("Server running on port 3000");
+});
