@@ -38,7 +38,11 @@ io.on("connection", (socket) => {
 
       const info = await sbx.getInfo();
 
-      io.to(userId).emit("sandbox:connected", { sandboxId: sbx.sandboxId });
+      const host = sbx.getHost(5173);
+
+      const url = `https://${host}`;
+
+      io.to(userId).emit("sandbox:connected", { sandboxId: sbx.sandboxId, url });
 
       const emit = (event: string, data: any) => io.to(userId).emit(event, data);
 
@@ -49,21 +53,12 @@ io.on("connection", (socket) => {
         tools: {
           updateFile: updateFile(sbx, emit),
         },
-
         messages,
         maxRetries: 0,
-        // onStepFinish: (step) => {
-        //   console.log("step take : ", step);
-        // },
+        onStepFinish: (step) => {
+          emit("step:finish", { step });
+        },
       });
-
-      const host = sbx.getHost(5173);
-
-      const url = `https://${host}`;
-
-      console.log("url : ", url);
-
-      console.log("ai response : ", response);
 
       emit("ai:done", {
         url,

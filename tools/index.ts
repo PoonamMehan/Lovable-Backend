@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const updateFile = (sbx: any) => {
+export const updateFile = (sbx: any, emit: any) => {
   return {
     description: "Update a file at a certain directory",
     inputSchema: z.object({
@@ -8,9 +8,9 @@ export const updateFile = (sbx: any) => {
       content: z.string().describe("Content of the file"),
     }),
     execute: async ({ location, content }: { location: string; content: string }) => {
-      // emit("tool:start", { name: "updateFile", location });
+      emit("tool:start", { name: "updateFile", location });
       await sbx.files.write(location, content);
-      // emit("tool:end", { name: "updateFile", message: "File updated" });
+      emit("tool:end", { name: "updateFile", message: "File updated" });
       return `File updated`;
     },
   };
