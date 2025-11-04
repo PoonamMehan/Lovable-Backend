@@ -12,17 +12,23 @@
   "license": "ISC",
   "dependencies": {
     "@ai-sdk/google": "^2.0.23",
+    "@azure/storage-blob": "^12.29.1",
     "@e2b/code-interpreter": "^2.0.1",
+    "@langchain/core": "^1.0.1",
+    "@langchain/langgraph": "^1.0.1",
+    "@prisma/client": "^6.18.0",
     "ai": "^5.0.70",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "nodemon": "^3.1.10",
     "socket.io": "^4.8.1",
-    "ts-node": "^10.9.2"
+    "ts-node": "^10.9.2",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.3"
+    "@types/express": "^5.0.3",
+    "prisma": "^6.18.0"
   }
 }

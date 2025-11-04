@@ -2,15 +2,16 @@ import { Server } from "socket.io";
 import { Sandbox } from "@e2b/code-interpreter";
 import express from "express";
 import dotenv from "dotenv";
-import { generateText, streamText } from "ai";
-import fs from "fs";
-import path from "path";
+import { generateText, stepCountIs, streamText } from "ai";
+
 import { google } from "@ai-sdk/google";
+import { prisma } from "../lib/prisma.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
-import { updateFile, readFile } from "../tools/index.ts";
+import { updateFile, runCommand } from "../tools/index.ts";
 import cors from "cors";
 import { CreateTreeFile } from "../helper/create-tree-file.ts";
 import { createServer } from "http";
+import { BlobServiceClient, StorageSharedKeyCredential } from "@azure/storage-blob";
 
 dotenv.config();
 
@@ -24,13 +25,138 @@ const io = new Server(httpServer, {
   },
 });
 
+const accountName = process.env.AZURE_STORAGE_ACCOUNT!;
+const accountKey = process.env.AZURE_STORAGE_KEY!;
+
+const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
+const blobServiceClient = new BlobServiceClient(`https://${accountName}.blob.core.windows.net`, sharedKeyCredential);
+
+async function streamToBuffer(readableStream: NodeJS.ReadableStream): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    readableStream.on("data", (data) => chunks.push(data instanceof Buffer ? data : Buffer.from(data)));
+    readableStream.on("end", () => resolve(Buffer.concat(chunks)));
+    readableStream.on("error", reject);
+  });
+}
+
 app.use(express.json());
 
 io.on("connection", (socket) => {
-  socket.on("startChat", async ({ prompt, messages, sandboxId, userId }) => {
+  socket.on("syncFiles", async ({ sandboxId, userId, projectId }) => {
+    console.log("syncing files....");
+    try {
+      socket.join(userId);
+
+      const user = await prisma.user.findUnique({
+        where: {
+          id: userId,
+        },
+      });
+
+      if (!user) {
+        io.to(userId).emit("user:error", { message: "User Not found" });
+        return;
+      }
+
+      const project = await prisma.project.findUnique({
+        where: {
+          userId,
+          id: projectId,
+        },
+      });
+
+      if (!project) {
+        io.to(userId).emit("project:error", { message: "Create Project First" });
+        return;
+      }
+
+      if (!sandboxId) {
+        io.to(userId).emit("sync:error", { message: "Sandbox Id needed" });
+        return;
+      }
+
+      const sbx = await Sandbox.connect(sandboxId, {
+        timeoutMs: 9_00_000,
+      });
+
+      await CreateTreeFile(sbx);
+
+      const execution = await sbx.commands.run("node /tmp/getTree.js");
+      const result = JSON.parse(execution.stdout);
+
+      const containerName = "projects";
+      const containerClient = blobServiceClient.getContainerClient(containerName);
+      await containerClient.createIfNotExists();
+
+      const uploadPromises = result.files.map(async (file: any) => {
+        const blobName = `${projectId}/${file.path}`.replace(/\\/g, "/");
+
+        console.log("blobName : ", blobName);
+
+        const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+        const buffer = Buffer.from(file.code, "utf-8");
+
+        await blockBlobClient.upload(buffer, buffer.length, {
+          blobHTTPHeaders: { blobContentType: file.type || "text/plain" },
+        });
+      });
+
+      await Promise.all(uploadPromises);
+
+      io.to(userId).emit("sync:complete", {
+        files: result.files,
+        tree: result.tree,
+      });
+    } catch (err) {
+      console.error("Error syncing files:", err);
+      io.to(userId).emit("sync:error", { message: err.message });
+    }
+  });
+
+  socket.on("startChat", async ({ prompt, messages, sandboxId, userId, projectId }) => {
     console.log("starting chat....");
     try {
       socket.join(userId);
+
+      const user = await prisma.user.findUnique({
+        where: {
+          id: userId,
+        },
+      });
+
+      if (!user) {
+        io.to(userId).emit("user:error", { message: "User Not found" });
+        return;
+      }
+
+      let project = await prisma.project.findUnique({
+        where: {
+          userId,
+          id: projectId,
+        },
+      });
+
+      if (!project) {
+        console.log("creating project for : ", projectId);
+        project = await prisma.project.create({
+          data: {
+            id: projectId,
+            name: "My App",
+            userId: user.id,
+          },
+        });
+      }
+
+      await prisma.message.create({
+        data: {
+          projectId: project.id,
+          role: "user",
+          content: prompt,
+        },
+      });
+
+      console.log("starting chat for : ", project.id);
 
       const sbx = sandboxId
         ? await Sandbox.connect(sandboxId)
@@ -39,33 +165,81 @@ io.on("connection", (socket) => {
       const info = await sbx.getInfo();
 
       const host = sbx.getHost(5173);
-
       const url = `https://${host}`;
 
       io.to(userId).emit("sandbox:connected", { sandboxId: sbx.sandboxId, url });
 
       const emit = (event: string, data: any) => io.to(userId).emit(event, data);
 
-      const response = await generateText({
+      const response = streamText({
         model: google("gemini-2.5-pro"),
         system: SYSTEM_PROMPT,
         toolChoice: "required",
         tools: {
           updateFile: updateFile(sbx, emit),
+          // runCode: runCommand(sbx, emit),
         },
         messages,
         maxRetries: 0,
-        onStepFinish: (step) => {
-          emit("step:finish", { step });
+        stopWhen: stepCountIs(1),
+      });
+
+      // const result = await sbx.commands.run("npm install", {
+      //   cwd: "/home/user",
+      // });
+
+      await prisma.message.create({
+        data: {
+          projectId: project.id,
+          role: "assistant",
+          content: JSON.stringify(await response.content, null, 2),
         },
       });
 
       emit("ai:done", {
         url,
-        response: response.content,
+        projectId: project.id,
         sandboxId: info.sandboxId,
-        messages: [...messages, { role: "assistant", content: JSON.stringify(response.content, null, 2) }],
+        messages: [
+          ...messages,
+          {
+            role: "assistant",
+            content: JSON.stringify(await response.content, null, 2),
+          },
+        ],
       });
+
+      // Auto-sync files to Azure after AI completes
+      try {
+        await CreateTreeFile(sbx);
+
+        const execution = await sbx.commands.run("node /tmp/getTree.js");
+        const result = JSON.parse(execution.stdout);
+
+        const containerName = "projects";
+        const containerClient = blobServiceClient.getContainerClient(containerName);
+        await containerClient.createIfNotExists();
+
+        const uploadPromises = result.files.map(async (file: any) => {
+          const blobName = `${projectId}/${file.path}`.replace(/\\/g, "/");
+          const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+          const buffer = Buffer.from(file.code, "utf-8");
+
+          await blockBlobClient.upload(buffer, buffer.length, {
+            blobHTTPHeaders: { blobContentType: file.type || "text/plain" },
+          });
+        });
+
+        await Promise.all(uploadPromises);
+
+        io.to(userId).emit("sync:complete", {
+          files: result.files,
+          tree: result.tree,
+        });
+      } catch (syncError) {
+        console.error("Error auto-syncing files:", syncError);
+        io.to(userId).emit("sync:error", { message: syncError.message });
+      }
     } catch (err) {
       console.error("Error:", err);
       io.to(userId).emit("error", { message: err.message });
@@ -78,26 +252,166 @@ io.on("connection", (socket) => {
 });
 
 app.post("/files", async (req, res) => {
-  const { sandboxId } = req.body;
+  const { sandboxId, userId, projectId } = req.body;
 
-  if (!sandboxId) {
-    return res.json({
-      error: "Sandbox Id needed",
+  console.log("file for projectId : ", projectId);
+
+  if (!sandboxId || !userId || !projectId) {
+    return res.status(400).json({
+      error: "sandboxId, userId, and projectId are required",
     });
   }
 
-  const sbx = await Sandbox.connect(sandboxId, {
-    timeoutMs: 9_00_000,
+  const user = await prisma.user.findUnique({
+    where: {
+      id: userId,
+    },
   });
 
-  await CreateTreeFile(sbx);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
 
-  const execution = await sbx.commands.run("node /tmp/getTree.js");
-  // console.log("execution.stdout : ", execution.stdout);
-  const result = JSON.parse(execution.stdout);
-  // console.log("result : ", result);
-  return res.json({ message: "success", files: result.files, tree: result.tree });
+  const project = await prisma.project.findUnique({
+    where: {
+      userId,
+      id: projectId,
+    },
+  });
+
+  if (!project) {
+    return res.status(404).json({ error: "Project not found" });
+  }
+
+  try {
+    const sbx = await Sandbox.connect(sandboxId, {
+      timeoutMs: 9_00_000,
+    });
+
+    await CreateTreeFile(sbx);
+
+    const execution = await sbx.commands.run("node /tmp/getTree.js");
+    const result = JSON.parse(execution.stdout);
+
+    return res.json({
+      message: "success",
+      files: result.files,
+      tree: result.tree,
+    });
+  } catch (error) {
+    console.error("Error uploading files:", error);
+    return res.status(500).json({
+      error: "Failed to upload files",
+      details: error.message,
+    });
+  }
 });
+
+app.get("/startProject/:projectId", async (req, res) => {
+  const { projectId } = req.params;
+  let userId = req.headers["userid"];
+  if (Array.isArray(userId)) {
+    userId = userId[0];
+  }
+
+  if (!projectId) {
+    return res.status(400).json({
+      error: "Project Id needed",
+    });
+  }
+  if (!userId || typeof userId !== "string") {
+    return res.status(400).json({
+      error: "userId Id needed",
+    });
+  }
+
+  const user = await prisma.user.findUnique({
+    where: {
+      id: userId,
+    },
+  });
+
+  if (!user) {
+    return res.status(404).json({
+      message: "User not found",
+    });
+  }
+
+  const project = await prisma.project.findUnique({
+    where: {
+      userId: user.id,
+      id: projectId,
+    },
+    include: {
+      messages: true,
+    },
+  });
+
+  if (!project) {
+    return res.status(404).json({
+      message: "project not found",
+    });
+  }
+
+  const sbx = await Sandbox.create("nav0r7gal5lnjfqhoe27", { timeoutMs: 9_00_000 });
+  const info = await sbx.getInfo();
+
+  try {
+    const containerName = "projects";
+    const containerClient = blobServiceClient.getContainerClient(containerName);
+
+    const prefix = `${projectId}/`;
+
+    console.log("prefix : ", prefix);
+
+    for await (const blob of containerClient.listBlobsFlat({ prefix })) {
+      // Remove the projectId prefix to get relative path
+      const relativePath = blob.name.replace(prefix, "");
+
+      // Download blob content
+      const blockBlobClient = containerClient.getBlockBlobClient(blob.name);
+      const downloadResponse = await blockBlobClient.download();
+
+      // Convert stream to string
+      const downloaded = await streamToString(downloadResponse.readableStreamBody!);
+
+      await sbx.files.write(relativePath, downloaded);
+      console.log("writing : ", relativePath);
+      console.log("for Sandbox : ", info.sandboxId);
+    }
+
+    const host = sbx.getHost(5173);
+    const url = `https://${host}`;
+
+    return res.json({
+      message: "success",
+      messages: project?.messages,
+      projectId,
+      url,
+      sandboxId: info.sandboxId,
+    });
+  } catch (error) {
+    console.error("Error reading files:", error);
+    return res.status(500).json({
+      error: "Failed to read files",
+      details: error.message,
+    });
+  }
+});
+
+// Helper function to convert stream to string
+async function streamToString(readableStream: NodeJS.ReadableStream): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    readableStream.on("data", (data) => {
+      chunks.push(data instanceof Buffer ? data : Buffer.from(data));
+    });
+    readableStream.on("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
+    readableStream.on("error", reject);
+  });
+}
 
 httpServer.listen(3000, () => {
   console.log("Server running on port 3000");
