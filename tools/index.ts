@@ -36,7 +36,7 @@ export const runCommand = (sbx: any, emit: any) => {
       }
       console.log("runCommand result: ", result);
       return `Command executed successfully:\nSTDOUT: ${result.stdout}`;
-    },
+    }, 
   });
 };
 

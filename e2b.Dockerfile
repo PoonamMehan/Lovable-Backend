@@ -2,9 +2,11 @@ FROM e2bdev/code-interpreter:latest
 
 WORKDIR /home/user
 
-RUN yes "no" | npm create vite@latest . -- --template react && \
+RUN npm create vite@latest myapp -- --template react && \
+    mv myapp/* . && \
+    mv myapp/.* . 2>/dev/null || true && \
+    rm -rf myapp && \
     npm install
-
 
 RUN npm install lucide-react
 RUN npm install -D tailwindcss@3 postcss autoprefixer

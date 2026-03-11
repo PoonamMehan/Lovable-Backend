@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "./dist",
+    "declaration": true,
+    "esModuleInterop": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2020",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "helper/**/*.ts",
+    "tools/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "lib",
+    "prisma",
+    "prisma.config.ts",
+    "prisma.config.js",
+    "x.js"
+  ]
+}

@@ -1,19 +1,27 @@
 import { Server } from "socket.io";
 import { Sandbox } from "@e2b/code-interpreter";
 import express from "express";
-import dotenv from "dotenv";
+import "dotenv/config";
 import { generateText, stepCountIs, streamText } from "ai";
 
 import { google } from "@ai-sdk/google";
-import { prisma } from "../lib/prisma.ts";
-import { SYSTEM_PROMPT } from "./prompt.ts";
-import { updateFile, runCommand } from "../tools/index.ts";
+import { SYSTEM_PROMPT } from "./prompt.js";
+import { updateFile, runCommand } from "../tools/index.js";
 import cors from "cors";
-import { CreateTreeFile } from "../helper/create-tree-file.ts";
+import { CreateTreeFile } from "../helper/create-tree-file.js";
 import { createServer } from "http";
 import { BlobServiceClient, StorageSharedKeyCredential } from "@azure/storage-blob";
 
-dotenv.config();
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "../lib/generated/prisma/client.js";
+const connectionString = `${process.env.DATABASE_URL}`;
+console.log("connectionString : ", connectionString);
+const adapter = new PrismaPg({ connectionString });
+const prisma = new PrismaClient({ adapter });
+export { prisma };
+
+
+
 
 const app = express();
 app.use(cors());
@@ -47,12 +55,13 @@ io.on("connection", (socket) => {
     console.log("syncing files....");
     try {
       socket.join(userId);
-
+      console.log("userId : ", userId);
       const user = await prisma.user.findUnique({
         where: {
           id: userId,
         },
       });
+      console.log("user : ", user);
 
       if (!user) {
         io.to(userId).emit("user:error", { message: "User Not found" });
@@ -108,7 +117,7 @@ io.on("connection", (socket) => {
         files: result.files,
         tree: result.tree,
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error syncing files:", err);
       io.to(userId).emit("sync:error", { message: err.message });
     }
@@ -160,7 +169,7 @@ io.on("connection", (socket) => {
 
       const sbx = sandboxId
         ? await Sandbox.connect(sandboxId)
-        : await Sandbox.create("nav0r7gal5lnjfqhoe27", { timeoutMs: 9_00_000 });
+        : await Sandbox.create("hmhu97yiefuboeu0an1l", { timeoutMs: 9_00_000 });
 
       const info = await sbx.getInfo();
 
@@ -236,11 +245,11 @@ io.on("connection", (socket) => {
           files: result.files,
           tree: result.tree,
         });
-      } catch (syncError) {
+      } catch (syncError: any) {
         console.error("Error auto-syncing files:", syncError);
         io.to(userId).emit("sync:error", { message: syncError.message });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error:", err);
       io.to(userId).emit("error", { message: err.message });
     }
@@ -298,7 +307,7 @@ app.post("/files", async (req, res) => {
       files: result.files,
       tree: result.tree,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error uploading files:", error);
     return res.status(500).json({
       error: "Failed to upload files",
@@ -353,7 +362,7 @@ app.get("/startProject/:projectId", async (req, res) => {
     });
   }
 
-  const sbx = await Sandbox.create("nav0r7gal5lnjfqhoe27", { timeoutMs: 9_00_000 });
+  const sbx = await Sandbox.create("hmhu97yiefuboeu0an1l", { timeoutMs: 9_00_000 });
   const info = await sbx.getInfo();
 
   try {
@@ -390,7 +399,7 @@ app.get("/startProject/:projectId", async (req, res) => {
       url,
       sandboxId: info.sandboxId,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error reading files:", error);
     return res.status(500).json({
       error: "Failed to read files",
@@ -413,6 +422,6 @@ async function streamToString(readableStream: NodeJS.ReadableStream): Promise<st
   });
 }
 
-httpServer.listen(3000, () => {
-  console.log("Server running on port 3000");
+httpServer.listen(3001, () => {
+  console.log("Server running on port 3001");
 });
