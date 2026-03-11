@@ -181,12 +181,12 @@ io.on("connection", (socket) => {
       const emit = (event: string, data: any) => io.to(userId).emit(event, data);
 
       const response = streamText({
-        model: google("gemini-2.5-pro"),
+        model: google("gemini-2.5-flash"),
         system: SYSTEM_PROMPT,
         toolChoice: "required",
         tools: {
           updateFile: updateFile(sbx, emit),
-          // runCode: runCommand(sbx, emit),
+          runCode: runCommand(sbx, emit),
         },
         messages,
         maxRetries: 0,
